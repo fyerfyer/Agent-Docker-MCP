@@ -1,0 +1,51 @@
+# dependencies
+node_modules/
+.pnpm/
+.pnpm-store/
+
+# build output
+dist/
+build/
+out/
+.next/
+.vercel/
+
+# caches / tmp
+.cache/
+.parcel-cache/
+.turbo/
+.vite/
+.eslintcache
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# env files
+.env
+.env.*.local
+.env.* 
+
+# coverage
+coverage/
+.nyc_output/
+
+# IDEs and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# archives / packaging
+*.tgz
+.serverless/
+
+# lockfiles
+# Keep pnpm-lock.yaml in repo for reproducible installs
+package-lock.json
+
+prev-project/
+self-docs/
+node_modules/
