@@ -3,6 +3,7 @@
 import Docker from "dockerode";
 import fs from "node:fs";
 import * as p from "@clack/prompts";
+import os from "node:os";
 import { randomBytes } from "node:crypto";
 import {
   type SandboxConfig,
@@ -115,6 +116,7 @@ export class SandboxManager {
         HostConfig: {
           Binds: binds,
           AutoRemove: config.autoRemove,
+          NetworkMode: os.platform() === "linux" ? "host" : "default",
           ...(groupAdd.length > 0 ? { GroupAdd: groupAdd } : {}),
         },
         Tty: true,
