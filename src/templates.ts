@@ -74,24 +74,21 @@ All code execution, builds, tests, and file operations should happen **inside th
 | Tool | Purpose |
 |------|---------|
 | \`exec_bash\` | Execute shell commands inside the sandbox container |
-| \`fs_read\` | Read file contents from the sandbox |
-| \`fs_write\` | Write/create files in the sandbox |
-| \`fs_list\` | List directory structure in the sandbox |
 | \`install_system_dependency\` | Install system packages (apt) with root privileges |
 | \`rebuild_sandbox\` | Rebuild sandbox from \`.agent-docker/Dockerfile\` |
 | \`get_env\` | Read environment variables from the sandbox |
 
 ## Workflow
 
-1. **Read files** using \`fs_read\` or \`fs_list\` to understand the project structure.
-2. **Make changes** using \`fs_write\` to create or modify files.
-3. **Run commands** using \`exec_bash\` for builds, tests, installs, linting, etc.
-4. **Verify** results using \`exec_bash\` (e.g., \`npm test\`, \`npm run build\`).
-5. **Report** the outcome to the user.
+1. **Read/Edit files** using your built-in local file tools (all changes instantly sync to the sandbox).
+2. **Run commands** using \`exec_bash\` for builds, tests, installs, linting, etc.
+3. **Verify** results using \`exec_bash\` (e.g., \`npm test\`, \`npm run build\`).
+4. **Report** the outcome to the user.
 
 ## Important Rules
 
-- Files written inside the sandbox are **automatically visible on the host** (identity-mount). No copy step is ever needed.
+- **CRITICAL ARGUMENTS FORMAT**: When using \`exec_bash\`, you MUST pass proper JSON arguments containing the \`command\` property. E.g., \`{"command": "npm install"}\`. You will get a format error (-32602) if you pass empty arguments.
+- Files written locally are **automatically visible on the host** (identity-mount). Use native file editing tools.
 - The \`.git\` directory is mounted as **read-only**. You can read git history but cannot modify it.
 - The sandbox runs as a **non-root user**. For system packages, use \`install_system_dependency\`.
 - For services like databases, Redis, or message queues, use **Docker Compose** (you have Docker CLI access), do NOT install them via apt-get.
@@ -109,6 +106,12 @@ You have access to a Docker sandbox via the \`agent-docker\` MCP server.
 * For system packages (jq, make, curl, etc.), use \`install_system_dependency\` — the sandbox is non-root.
 * For databases/services, orchestrate with Docker Compose. Do NOT install them into the sandbox.
 * The .git directory is read-only. Use git for reading (status, diff, log) only.
+
+# Agent Execution Rules
+CRITICAL: You are managing a Docker Agent Platform. 
+1. DO NOT EVER use the built-in system \`Shell\` or \`Terminal\` tools to run commands on the host machine. This is strictly forbidden.
+2. ALL commands MUST be executed inside the container using the MCP tool \`exec_bash\`.
+3. When calling MCP tools (like \`exec_bash\`), ensure the \`arguments\` are correctly formatted as JSON containing the required \`command\` field. Example: {\"command\": \"ls -la\"}
 `;
 
 export const MCP_SERVER_ENTRY = {
