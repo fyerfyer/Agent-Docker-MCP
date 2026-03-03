@@ -33,9 +33,11 @@
   ],
   "dependencies": {
     "@clack/prompts": "^1.0.1",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "commander": "^14.0.3",
     "dockerode": "^4.0.9",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/dockerode": "^4.0.1",

@@ -1,13 +1,13 @@
 // 管理 Docker 容器的生命周期以及 bind mount 和权限同步等。
 
 import Docker from "dockerode";
+import fs from "node:fs";
 import * as p from "@clack/prompts";
-import color from "picocolors";
 import { randomBytes } from "node:crypto";
 import {
   type SandboxConfig,
   type SandboxState,
-  WORKSPACE_PATH,
+  DOCKER_SOCKET,
   LABELS,
   LABEL_PREFIX,
   defaultConfig,
@@ -37,29 +37,75 @@ function parseContainerState(status: string): SandboxState {
 
 export class SandboxManager {
   private docker: Docker;
+  private quiet: boolean;
 
-  constructor(docker: Docker) {
+  constructor(docker: Docker, options?: { quiet?: boolean }) {
     this.docker = docker;
+    this.quiet = options?.quiet ?? false;
+  }
+
+  private createSpinner(): {
+    start: (msg: string) => void;
+    stop: (msg: string) => void;
+    message: (msg: string) => void;
+  } {
+    if (this.quiet) {
+      return {
+        start: (msg: string) => console.error(msg),
+        stop: (msg: string) => console.error(msg),
+        message: (msg: string) => console.error(msg),
+      };
+    }
+    return p.spinner();
+  }
+
+  private logInfo(msg: string): void {
+    if (this.quiet) {
+      console.error(msg);
+    } else {
+      p.log.info(msg);
+    }
   }
 
   async create(config: SandboxConfig): Promise<SandboxInfo> {
-    await ensureImage(this.docker, config.image);
+    await ensureImage(this.docker, config.image, this.quiet);
 
     const sessionId = generateSessionId();
     const containerName = config.name ?? `agent-docker-${sessionId}`;
     const { uid, gid } = getHostUser();
 
-    const s = p.spinner();
-    s.start(`Creating sandbox ${color.cyan(containerName)}...`);
+    const s = this.createSpinner();
+    s.start(`Creating sandbox ${containerName}...`);
 
     try {
+      // 让容器和宿主机 bind 同一个目录
+      const binds: string[] = [`${config.workDir}:${config.workDir}`];
+
+      // Docker socket for DooD
+      const groupAdd: string[] = [];
+      if (fs.existsSync(DOCKER_SOCKET)) {
+        binds.push(`${DOCKER_SOCKET}:${DOCKER_SOCKET}`);
+        try {
+          const socketGid = fs.statSync(DOCKER_SOCKET).gid;
+          groupAdd.push(socketGid.toString());
+        } catch {
+          // ignore stat errors
+        }
+      }
+
+      // 将 .git 挂载为只读以保护 git 历史
+      const gitDir = `${config.workDir}/.git`;
+      if (fs.existsSync(gitDir)) {
+        binds.push(`${gitDir}:${gitDir}:ro`);
+      }
+
       const container = await this.docker.createContainer({
         Image: config.image,
         name: containerName,
         Cmd: ["sleep", "infinity"],
         User: `${uid}:${gid}`,
-        WorkingDir: WORKSPACE_PATH,
-        Env: config.env ?? [],
+        WorkingDir: config.workDir,
+        Env: ["HOME=/tmp", ...(config.env ?? [])],
         Labels: {
           [LABELS.MANAGED_BY]: LABEL_PREFIX,
           [LABELS.PROJECT_DIR]: config.workDir,
@@ -67,8 +113,9 @@ export class SandboxManager {
           [LABELS.CREATED_AT]: new Date().toISOString(),
         },
         HostConfig: {
-          Binds: [`${config.workDir}:${WORKSPACE_PATH}`],
+          Binds: binds,
           AutoRemove: config.autoRemove,
+          ...(groupAdd.length > 0 ? { GroupAdd: groupAdd } : {}),
         },
         Tty: true,
         OpenStdin: true,
@@ -77,7 +124,7 @@ export class SandboxManager {
       await container.start();
 
       s.stop(
-        `Sandbox ${color.cyan(containerName)} (${color.dim(container.id.slice(0, 12))}) is running`,
+        `Sandbox ${containerName} (${container.id.slice(0, 12)}) is running`,
       );
 
       return {
@@ -89,27 +136,25 @@ export class SandboxManager {
         createdAt: new Date().toISOString(),
       };
     } catch (err) {
-      s.stop(color.red("Failed to create sandbox"));
+      s.stop("Failed to create sandbox");
       throw err;
     }
   }
 
   async stop(containerId: string): Promise<void> {
     const container = this.docker.getContainer(containerId);
-    const s = p.spinner();
-    s.start(`Stopping sandbox ${color.dim(containerId.slice(0, 12))}...`);
+    const s = this.createSpinner();
+    s.start(`Stopping sandbox ${containerId.slice(0, 12)}...`);
 
     try {
       await container.stop({ t: 10 });
-      s.stop(`Sandbox ${color.dim(containerId.slice(0, 12))} stopped`);
+      s.stop(`Sandbox ${containerId.slice(0, 12)} stopped`);
     } catch (err: unknown) {
       const dockerErr = err as { statusCode?: number };
       if (dockerErr.statusCode === 304) {
-        s.stop(
-          `Sandbox ${color.dim(containerId.slice(0, 12))} was already stopped`,
-        );
+        s.stop(`Sandbox ${containerId.slice(0, 12)} was already stopped`);
       } else {
-        s.stop(color.red("Failed to stop sandbox"));
+        s.stop("Failed to stop sandbox");
         throw err;
       }
     }
@@ -118,7 +163,7 @@ export class SandboxManager {
   async remove(containerId: string, force: boolean = false): Promise<void> {
     const container = this.docker.getContainer(containerId);
     await container.remove({ force });
-    p.log.info(`Sandbox ${color.dim(containerId.slice(0, 12))} removed`);
+    this.logInfo(`Sandbox ${containerId.slice(0, 12)} removed`);
   }
 
   async list(): Promise<SandboxInfo[]> {
@@ -161,15 +206,15 @@ export class SandboxManager {
     const container = this.docker.getContainer(containerId);
     const info = await container.inspect();
 
-    const s = p.spinner();
+    const s = this.createSpinner();
     const shortId = containerId.slice(0, 12);
-    s.start(`Resuming sandbox ${color.dim(shortId)}...`);
+    s.start(`Resuming sandbox ${shortId}...`);
 
     if (info.State.Running) {
-      s.stop(`Sandbox ${color.dim(shortId)} is already running`);
+      s.stop(`Sandbox ${shortId} is already running`);
     } else {
       await container.start();
-      s.stop(`Sandbox ${color.dim(shortId)} resumed`);
+      s.stop(`Sandbox ${shortId} resumed`);
     }
 
     return {

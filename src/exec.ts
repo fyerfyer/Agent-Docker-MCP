@@ -1,11 +1,23 @@
 import Docker from "dockerode";
 import { PassThrough } from "node:stream";
-import { WORKSPACE_PATH } from "./config.js";
+import { DANGEROUS_PATTERNS } from "./config.js";
 
 export interface ExecResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+export function validateCommand(cmd: string): void {
+  for (const { pattern, reason } of DANGEROUS_PATTERNS) {
+    if (pattern.test(cmd)) {
+      throw new Error(
+        `BLOCKED: ${reason}.\n` +
+          `Command: ${cmd}\n` +
+          "This command has been blocked by the agent-docker safety guard.",
+      );
+    }
+  }
 }
 
 // 在 Docker 内执行命令
@@ -16,12 +28,15 @@ export async function execInContainer(
   options: {
     workDir?: string;
     env?: string[];
+    user?: string;
     streamStdout?: boolean;
     streamStderr?: boolean;
     onStdout?: (data: string) => void;
     onStderr?: (data: string) => void;
   } = {},
 ): Promise<ExecResult> {
+  validateCommand(cmd);
+
   const container = docker.getContainer(containerId);
 
   const exec = await container.exec({
@@ -29,8 +44,9 @@ export async function execInContainer(
     AttachStdout: true,
     AttachStderr: true,
     Tty: false,
-    WorkingDir: options.workDir ?? WORKSPACE_PATH,
+    WorkingDir: options.workDir,
     Env: options.env,
+    User: options.user,
   });
 
   const stream = await exec.start({ Detach: false, Tty: false });

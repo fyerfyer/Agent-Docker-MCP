@@ -2,10 +2,19 @@ import { Command } from "commander";
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import process from "node:process";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
 import { ensureDocker, ensureImage } from "./env.js";
 import { SandboxManager } from "./sandbox.js";
 import { execInContainer, healthCheck } from "./exec.js";
 import { DEFAULT_IMAGE, type SandboxConfig, defaultConfig } from "./config.js";
+import { startMcpServer, type McpServerOptions } from "./mcp-server.js";
+import {
+  COPILOT_INSTRUCTIONS,
+  CURSOR_RULES,
+  MCP_SERVER_ENTRY,
+} from "./templates.js";
 
 const VERSION = "0.1.0";
 
@@ -18,6 +27,114 @@ ${color.cyan("╚═════════════════════
 
 const program = new Command();
 
+// 在项目创建 .vscode/mcp.json、.cursor/mcp.json 等配置
+async function scaffoldProject(dir: string): Promise<void> {
+  const githubDir = path.join(dir, ".github");
+  const instructionsPath = path.join(githubDir, "copilot-instructions.md");
+
+  await fsp.mkdir(githubDir, { recursive: true });
+
+  if (fs.existsSync(instructionsPath)) {
+    p.log.info(
+      `${color.dim(".github/copilot-instructions.md")} already exists — skipping`,
+    );
+  } else {
+    await fsp.writeFile(instructionsPath, COPILOT_INSTRUCTIONS, "utf8");
+    p.log.success(`Created ${color.cyan(".github/copilot-instructions.md")}`);
+  }
+
+  const vscodeDir = path.join(dir, ".vscode");
+  const mcpPath = path.join(vscodeDir, "mcp.json");
+
+  await fsp.mkdir(vscodeDir, { recursive: true });
+
+  interface McpConfig {
+    servers?: Record<string, unknown>;
+    mcpServers?: Record<string, unknown>;
+    [key: string]: unknown;
+  }
+
+  let mcpConfig: McpConfig = { servers: {} };
+
+  if (fs.existsSync(mcpPath)) {
+    try {
+      const raw = await fsp.readFile(mcpPath, "utf8");
+      mcpConfig = JSON.parse(raw) as McpConfig;
+      if (!mcpConfig.servers) mcpConfig.servers = {};
+    } catch {
+      p.log.warn(
+        `${color.dim(".vscode/mcp.json")} exists but is not valid JSON — overwriting`,
+      );
+      mcpConfig = { servers: {} };
+    }
+  }
+
+  if ("agent-docker" in (mcpConfig.servers ?? {})) {
+    p.log.info(
+      `${color.dim(".vscode/mcp.json")} already contains ${color.cyan("agent-docker")} entry — skipping`,
+    );
+  } else {
+    mcpConfig.servers = {
+      ...mcpConfig.servers,
+      "agent-docker": MCP_SERVER_ENTRY,
+    };
+    await fsp.writeFile(
+      mcpPath,
+      JSON.stringify(mcpConfig, null, 2) + "\n",
+      "utf8",
+    );
+    p.log.success(
+      `Updated ${color.cyan(".vscode/mcp.json")} with agent-docker server`,
+    );
+  }
+
+  const cursorRulesPath = path.join(dir, ".cursorrules");
+  if (fs.existsSync(cursorRulesPath)) {
+    p.log.info(`${color.dim(".cursorrules")} already exists — skipping`);
+  } else {
+    await fsp.writeFile(cursorRulesPath, CURSOR_RULES, "utf8");
+    p.log.success(`Created ${color.cyan(".cursorrules")}`);
+  }
+
+  const cursorDir = path.join(dir, ".cursor");
+  const cursorMcpPath = path.join(cursorDir, "mcp.json");
+  await fsp.mkdir(cursorDir, { recursive: true });
+
+  let cursorMcpConfig: McpConfig = { mcpServers: {} };
+
+  if (fs.existsSync(cursorMcpPath)) {
+    try {
+      const raw = await fsp.readFile(cursorMcpPath, "utf8");
+      cursorMcpConfig = JSON.parse(raw) as McpConfig;
+      if (!cursorMcpConfig.mcpServers) cursorMcpConfig.mcpServers = {};
+    } catch {
+      p.log.warn(
+        `${color.dim(".cursor/mcp.json")} exists but is not valid JSON — overwriting`,
+      );
+      cursorMcpConfig = { mcpServers: {} };
+    }
+  }
+
+  if ("agent-docker" in (cursorMcpConfig.mcpServers ?? {})) {
+    p.log.info(
+      `${color.dim(".cursor/mcp.json")} already contains ${color.cyan("agent-docker")} entry — skipping`,
+    );
+  } else {
+    cursorMcpConfig.mcpServers = {
+      ...cursorMcpConfig.mcpServers,
+      "agent-docker": MCP_SERVER_ENTRY,
+    };
+    await fsp.writeFile(
+      cursorMcpPath,
+      JSON.stringify(cursorMcpConfig, null, 2) + "\n",
+      "utf8",
+    );
+    p.log.success(
+      `Updated ${color.cyan(".cursor/mcp.json")} with agent-docker server`,
+    );
+  }
+}
+
 program
   .name("agent-docker")
   .description("Lightweight Docker sandbox CLI with MCP protocol support")
@@ -25,17 +142,71 @@ program
 
 program
   .command("init")
-  .description("Initialize the sandbox environment (check Docker, pull image)")
+  .description(
+    "Initialize the sandbox environment (check Docker, pull image, scaffold MCP config)",
+  )
   .option("-i, --image <image>", "Docker image to use", DEFAULT_IMAGE)
-  .action(async (opts: { image: string }) => {
-    console.log(ASCII_ART);
-    p.intro(color.bgCyan(color.black(" agent-docker init ")));
+  .option(
+    "--skip-scaffold",
+    "Skip writing .vscode/mcp.json and .github/copilot-instructions.md",
+    false,
+  )
+  .option(
+    "--serve",
+    "Start the MCP server after initialization (blocks the terminal)",
+    false,
+  )
+  .action(
+    async (opts: { image: string; skipScaffold: boolean; serve: boolean }) => {
+      console.log(ASCII_ART);
+      p.intro(color.bgCyan(color.black(" agent-docker init ")));
 
-    const docker = await ensureDocker();
-    await ensureImage(docker, opts.image);
+      const docker = await ensureDocker();
+      await ensureImage(docker, opts.image);
 
-    p.outro(color.green("Environment is ready!"));
-  });
+      if (!opts.skipScaffold) {
+        await scaffoldProject(process.cwd());
+      }
+
+      const manager = new SandboxManager(docker);
+      const workDir = process.cwd();
+      let existing = await manager.findForProject(workDir);
+
+      if (existing) {
+        if (existing.state !== "active") {
+          p.log.info(`Resuming existing sandbox: ${color.cyan(existing.name)}`);
+          const info = await manager.resume(existing.id);
+          const healthy = await healthCheck(docker, info.id);
+          if (healthy) {
+            p.log.success("Health check passed");
+          }
+        } else {
+          p.log.info(`Sandbox is already active: ${color.cyan(existing.name)}`);
+        }
+      } else {
+        p.log.info("Creating new sandbox...");
+        const config: SandboxConfig = {
+          ...defaultConfig,
+          image: opts.image,
+          workDir,
+          autoRemove: false,
+        };
+        const info = await manager.create(config);
+        const healthy = await healthCheck(docker, info.id);
+        if (healthy) {
+          p.log.success("Health check passed");
+        }
+        p.log.info(`Workspace: ${color.dim(workDir)} (identity-mounted)`);
+      }
+
+      if (opts.serve) {
+        p.outro(color.green("Environment is ready! Starting MCP Server..."));
+        await startMcpServer({ projectDir: workDir, image: opts.image });
+      } else {
+        p.outro(color.green("Environment is ready!"));
+      }
+    },
+  );
 
 program
   .command("start")
@@ -114,9 +285,7 @@ program
         p.log.warn("Health check failed - container may not be fully ready");
       }
 
-      p.log.info(
-        `Workspace: ${color.dim(workDir)} → ${color.dim("/workspace")}`,
-      );
+      p.log.info(`Workspace: ${color.dim(workDir)} (identity-mounted)`);
       p.log.info(`Container: ${color.dim(info.id.slice(0, 12))}`);
 
       p.outro(color.green(`Sandbox ${color.cyan(info.name)} is ready!`));
@@ -304,6 +473,26 @@ program
     }
 
     p.outro("Cleanup complete.");
+  });
+
+program
+  .command("serve")
+  .description(
+    "Start the MCP server (stdio transport) for AI agent integration. " +
+      "Automatically creates/resumes a sandbox for the project directory.",
+  )
+  .option("--project-dir <dir>", "Project directory to bind (default: cwd)")
+  .option("-i, --image <image>", "Docker image to use", DEFAULT_IMAGE)
+  .action(async (opts: { projectDir?: string; image?: string }) => {
+    const mcpOpts: McpServerOptions = {};
+    if (opts.projectDir) {
+      mcpOpts.projectDir = opts.projectDir;
+    }
+    if (opts.image) {
+      mcpOpts.image = opts.image;
+    }
+
+    await startMcpServer(mcpOpts);
   });
 
 process.on("SIGINT", async () => {

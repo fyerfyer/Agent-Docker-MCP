@@ -3,6 +3,7 @@ export {
   execInContainer,
   execQuiet,
   healthCheck,
+  validateCommand,
   type ExecResult,
 } from "./exec.js";
 export {
@@ -12,12 +13,19 @@ export {
   imageExists,
   getDockerClient,
   getHostUser,
+  buildBaseImage,
 } from "./env.js";
 export {
   DEFAULT_IMAGE,
-  WORKSPACE_PATH,
+  DOCKER_SOCKET,
   LABELS,
+  DANGEROUS_PATTERNS,
   type SandboxConfig,
   type SandboxState,
   defaultConfig,
 } from "./config.js";
+export {
+  createMcpServer,
+  startMcpServer,
+  type McpServerOptions,
+} from "./mcp-server.js";
