@@ -5,6 +5,7 @@ import process from "node:process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import figlet from "figlet";
 import { ensureDocker, ensureImage } from "./env.js";
 import { SandboxManager } from "./sandbox.js";
 import { execInContainer, healthCheck } from "./exec.js";
@@ -15,15 +16,49 @@ import {
   CURSOR_RULES,
   MCP_SERVER_ENTRY,
 } from "./templates.js";
+import {
+  createSession,
+  endSession,
+  listSessions,
+  listSessionsByProject,
+  getSession,
+  findSessionByPrefix,
+  getSessionLogs,
+  appendLog,
+  formatDuration,
+  shortenPath,
+} from "./db/session.js";
+import { initDb } from "./db/index.js";
 
 const VERSION = "0.1.0";
 
-const ASCII_ART = `
-${color.cyan("╔══════════════════════════════════╗")}
-${color.cyan("║")}  ${color.bold(color.white("agent-docker"))}  ${color.dim(`v${VERSION}`)}          ${color.cyan("║")}
-${color.cyan("║")}  ${color.dim("Docker sandbox for AI agents")}   ${color.cyan("║")}
-${color.cyan("╚══════════════════════════════════╝")}
-`;
+function renderBanner(): string {
+  try {
+    const raw = figlet.textSync("agent-docker", {
+      font: "Small",
+      horizontalLayout: "default",
+    });
+
+    const lines = raw.split("\n");
+    const colors = [
+      color.cyan,
+      color.blue,
+      color.magenta,
+      color.blue,
+      color.cyan,
+    ];
+    const gradient = lines
+      .map((line, i) => {
+        const colorFn = colors[i % colors.length]!;
+        return colorFn(line);
+      })
+      .join("\n");
+
+    return `\n${gradient}\n  ${color.dim(`v${VERSION}`)}  ${color.dim("— Docker sandbox for AI agents")}\n`;
+  } catch {
+    return `\n${color.cyan(color.bold("  agent-docker"))}  ${color.dim(`v${VERSION}`)}\n  ${color.dim("Docker sandbox for AI agents")}\n`;
+  }
+}
 
 const program = new Command();
 
@@ -158,7 +193,7 @@ program
   )
   .action(
     async (opts: { image: string; skipScaffold: boolean; serve: boolean }) => {
-      console.log(ASCII_ART);
+      console.log(renderBanner());
       p.intro(color.bgCyan(color.black(" agent-docker init ")));
 
       const docker = await ensureDocker();
@@ -224,7 +259,7 @@ program
       env?: string[];
       resume: boolean;
     }) => {
-      console.log(ASCII_ART);
+      console.log(renderBanner());
       p.intro(color.bgCyan(color.black(" agent-docker start ")));
 
       const docker = await ensureDocker();
@@ -285,6 +320,19 @@ program
         p.log.warn("Health check failed - container may not be fully ready");
       }
 
+      // 跟踪 Session
+      try {
+        const session = await createSession(workDir, info.id);
+        await appendLog(
+          session.id,
+          "system_event",
+          `Sandbox created: ${info.name} (${info.id.slice(0, 12)})`,
+        );
+        p.log.info(`Session: ${color.cyan(session.id)}`);
+      } catch {
+        // Non-fatal
+      }
+
       p.log.info(`Workspace: ${color.dim(workDir)} (identity-mounted)`);
       p.log.info(`Container: ${color.dim(info.id.slice(0, 12))}`);
 
@@ -305,6 +353,21 @@ program
 
     if (opts.id) {
       await manager.stop(opts.id);
+      try {
+        const allSessions = await listSessions(100);
+        for (const s of allSessions) {
+          if (s.containerId === opts.id && s.status === "active") {
+            await endSession(s.id, "completed");
+            await appendLog(
+              s.id,
+              "system_event",
+              "Sandbox stopped by user (--id)",
+            );
+          }
+        }
+      } catch {
+        // non-fatal
+      }
       p.outro(color.green("Sandbox stopped."));
       return;
     }
@@ -333,6 +396,17 @@ program
     }
 
     await manager.stop(existing.id);
+    try {
+      const allSessions = await listSessions(100);
+      for (const s of allSessions) {
+        if (s.containerId === existing.id && s.status === "active") {
+          await endSession(s.id, "completed");
+          await appendLog(s.id, "system_event", "Sandbox stopped by user");
+        }
+      }
+    } catch {
+      // non-fatal
+    }
     p.outro(color.green("Sandbox stopped."));
   });
 
@@ -474,6 +548,205 @@ program
 
     p.outro("Cleanup complete.");
   });
+
+program
+  .command("history")
+  .alias("ls")
+  .description("List past sandbox sessions")
+  .option("-n, --limit <number>", "Number of sessions to show", "20")
+  .option("-p, --project", "Show only sessions for current directory", false)
+  .option("--json", "Output as JSON", false)
+  .action(async (opts: { limit: string; project: boolean; json: boolean }) => {
+    await initDb();
+    const limit = parseInt(opts.limit, 10) || 20;
+
+    const results = opts.project
+      ? await listSessionsByProject(process.cwd(), limit)
+      : await listSessions(limit);
+
+    if (opts.json) {
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
+
+    if (results.length === 0) {
+      p.log.info("No sessions found.");
+      return;
+    }
+
+    console.log(renderBanner());
+    p.intro(color.bgCyan(color.black(" agent-docker history ")));
+
+    const header = [
+      color.bold(color.white("SESSION ID".padEnd(12))),
+      color.bold(color.white("PROJECT".padEnd(30))),
+      color.bold(color.white("STATUS".padEnd(20))),
+      color.bold(color.white("DURATION".padEnd(12))),
+      color.bold(color.white("CREATED AT")),
+    ].join("  ");
+
+    console.log(`  ${header}`);
+    console.log(`  ${color.dim("─".repeat(100))}`);
+
+    const statusColors: Record<string, (s: string) => string> = {
+      active: color.green,
+      completed: color.blue,
+      error: color.red,
+      terminated_by_user: color.yellow,
+    };
+
+    for (const session of results) {
+      const statusColor = statusColors[session.status] ?? color.dim;
+      const duration = formatDuration(session.createdAt, session.endedAt);
+      const projectDisplay = shortenPath(session.projectPath);
+
+      const row = [
+        color.cyan(session.id.padEnd(12)),
+        color.dim(
+          projectDisplay.length > 28
+            ? projectDisplay.slice(-28)
+            : projectDisplay.padEnd(30),
+        ),
+        statusColor(session.status.padEnd(20)),
+        color.white(duration.padEnd(12)),
+        color.dim(session.createdAt.replace("T", " ").slice(0, 19)),
+      ].join("  ");
+
+      console.log(`  ${row}`);
+    }
+
+    console.log();
+    p.outro(`${results.length} session(s) shown`);
+  });
+
+program
+  .command("replay")
+  .description(
+    "Replay the log output of a past session (like asciinema for your sandbox)",
+  )
+  .argument("<sessionId>", "Session ID (or unique prefix)")
+  .option(
+    "-f, --follow",
+    "Simulate real-time playback with delays between log entries",
+    false,
+  )
+  .option(
+    "-s, --speed <multiplier>",
+    "Playback speed multiplier (e.g. 2 = 2x faster, 0.5 = half speed)",
+    "1",
+  )
+  .action(
+    async (sessionId: string, opts: { follow: boolean; speed: string }) => {
+      await initDb();
+
+      let session = await getSession(sessionId);
+      if (!session) {
+        session = await findSessionByPrefix(sessionId);
+      }
+      if (!session) {
+        p.log.error(
+          `Session ${color.cyan(sessionId)} not found. Run ${color.cyan("agent-docker history")} to see available sessions.`,
+        );
+        process.exit(1);
+      }
+
+      const sessionLogs = await getSessionLogs(session.id);
+
+      if (sessionLogs.length === 0) {
+        p.log.info(`Session ${color.cyan(session.id)} has no logs.`);
+        return;
+      }
+
+      console.log(renderBanner());
+      p.intro(color.bgCyan(color.black(" agent-docker replay ")));
+
+      const statusColors: Record<string, (s: string) => string> = {
+        active: color.green,
+        completed: color.blue,
+        error: color.red,
+        terminated_by_user: color.yellow,
+      };
+      const statusColor = statusColors[session.status] ?? color.dim;
+
+      p.log.message(
+        [
+          `${color.bold("Session:")}  ${color.cyan(session.id)}`,
+          `${color.bold("Project:")}  ${color.dim(shortenPath(session.projectPath))}`,
+          `${color.bold("Status:")}   ${statusColor(session.status)}`,
+          `${color.bold("Created:")}  ${color.dim(session.createdAt.replace("T", " ").slice(0, 19))}`,
+          session.endedAt
+            ? `${color.bold("Ended:")}    ${color.dim(session.endedAt.replace("T", " ").slice(0, 19))}`
+            : "",
+          `${color.bold("Duration:")} ${formatDuration(session.createdAt, session.endedAt)}`,
+          `${color.bold("Logs:")}     ${sessionLogs.length} entries`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+
+      console.log(`\n  ${color.dim("─".repeat(80))}\n`);
+
+      const speed = parseFloat(opts.speed) || 1;
+      const typeStyles: Record<
+        string,
+        { prefix: string; colorFn: (s: string) => string }
+      > = {
+        mcp_tool_call: {
+          prefix: "▶ MCP",
+          colorFn: color.green,
+        },
+        container_stdout: {
+          prefix: "  OUT",
+          colorFn: color.dim,
+        },
+        container_stderr: {
+          prefix: "  ERR",
+          colorFn: color.red,
+        },
+        system_event: {
+          prefix: "  SYS",
+          colorFn: color.blue,
+        },
+      };
+
+      let prevTimestamp: number | null = null;
+
+      for (const log of sessionLogs) {
+        const style = typeStyles[log.type] ?? {
+          prefix: "  ???",
+          colorFn: color.dim,
+        };
+
+        if (opts.follow && prevTimestamp !== null) {
+          const currentTs = new Date(log.timestamp).getTime();
+          const diff = currentTs - prevTimestamp;
+          const delay = Math.min(diff / speed, 3000); 
+          if (delay > 50) {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+        }
+        prevTimestamp = new Date(log.timestamp).getTime();
+
+        const timeStr = log.timestamp.replace("T", " ").slice(11, 19);
+        const prefix = style.colorFn(`[${timeStr}] ${style.prefix}`);
+
+        const lines = log.payload.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (i === 0) {
+            console.log(`  ${prefix}  ${style.colorFn(lines[i]!)}`);
+          } else {
+            const padding = " ".repeat(
+              timeStr.length + style.prefix.length + 5,
+            );
+            console.log(`  ${padding}${style.colorFn(lines[i]!)}`);
+          }
+        }
+      }
+
+      console.log();
+      p.outro(`Replay complete — ${sessionLogs.length} log entries`);
+    },
+  );
 
 program
   .command("serve")

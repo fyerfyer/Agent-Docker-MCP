@@ -1,8 +1,8 @@
 /**
- *  exec_bash                  – 在沙箱内执行 bash 命令 (Required command execution inside docker container)
- *  install_system_dependency  – 以 root 权限热安装系统依赖 (Install system level packages via apt like apt-get)
- *  rebuild_sandbox            – 根据 .agent-docker/Dockerfile 重建沙箱 (Rebuilds sandbox dynamically)
- *  get_env                    – 读取沙箱内的环境变量 (Read docker environment variables)
+ *  exec_bash                  – 在沙箱内执行 bash 命令
+ *  install_system_dependency  – 以 root 权限热安装系统依赖
+ *  rebuild_sandbox            – 根据 .agent-docker/Dockerfile 重建沙箱
+ *  get_env                    – 读取沙箱内的环境变量
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -16,6 +16,8 @@ import { DEFAULT_IMAGE, type SandboxConfig, defaultConfig } from "./config.js";
 import { SandboxManager } from "./sandbox.js";
 import { ensureDocker, ensureImage } from "./env.js";
 import { existsSync } from "node:fs";
+import { createSession, endSession, appendLog } from "./db/session.js";
+import { initDb } from "./db/index.js";
 
 async function resolveContainer(
   manager: SandboxManager,
@@ -32,14 +34,6 @@ async function resolveContainer(
     );
   }
   return sandbox.id;
-}
-
-function safeHeredocTag(content: string): string {
-  let tag = "AGENT_DOCKER_EOF";
-  while (content.includes(tag)) {
-    tag = `AGENT_DOCKER_EOF_${randomBytes(4).toString("hex")}`;
-  }
-  return tag;
 }
 
 function buildServerInstructions(projectDir: string): string {
@@ -62,6 +56,7 @@ export function createMcpServer(
   docker: Docker,
   manager: SandboxManager,
   projectDir: string,
+  sessionId?: string,
 ): McpServer {
   const server = new McpServer(
     {
@@ -105,6 +100,12 @@ export function createMcpServer(
     async ({ command, workDir, timeout, containerId }) => {
       const cid = await resolveContainer(manager, containerId);
 
+      if (sessionId) {
+        appendLog(sessionId, "mcp_tool_call", `exec_bash: ${command}`).catch(
+          () => {},
+        );
+      }
+
       const cmd = timeout
         ? `timeout ${Math.ceil(timeout / 1000)} bash -c ${JSON.stringify(command)}`
         : command;
@@ -114,6 +115,19 @@ export function createMcpServer(
         streamStdout: false,
         streamStderr: false,
       });
+
+      if (sessionId) {
+        if (result.stdout) {
+          appendLog(sessionId, "container_stdout", result.stdout).catch(
+            () => {},
+          );
+        }
+        if (result.stderr) {
+          appendLog(sessionId, "container_stderr", result.stderr).catch(
+            () => {},
+          );
+        }
+      }
 
       const output = [
         result.stdout ? `STDOUT:\n${result.stdout}` : "",
@@ -428,13 +442,36 @@ export async function startMcpServer(
   // 设置项目目录
   process.env.AGENT_DOCKER_PROJECT_DIR = projectDir;
 
-  const server = createMcpServer(docker, manager, projectDir);
+  let sessionId: string | undefined;
+  try {
+    await initDb();
+    const session = await createSession(projectDir, existing!.id);
+    sessionId = session.id;
+    await appendLog(
+      session.id,
+      "system_event",
+      `MCP Server started for ${projectDir}`,
+    );
+    console.error(`Session tracking: ${session.id}`);
+  } catch (err) {
+    console.error("Warning: session tracking unavailable:", err);
+  }
+
+  const server = createMcpServer(docker, manager, projectDir, sessionId);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("agent-docker MCP Server running on stdio");
 
   const cleanup = async () => {
     console.error("MCP Server shutting down...");
+    if (sessionId) {
+      try {
+        await appendLog(sessionId, "system_event", "MCP Server shutting down");
+        await endSession(sessionId, "completed");
+      } catch {
+        // Non-fatal
+      }
+    }
     process.exit(0);
   };
 
