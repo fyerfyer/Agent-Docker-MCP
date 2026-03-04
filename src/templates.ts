@@ -115,8 +115,8 @@ CRITICAL: You are managing a Docker Agent Platform.
 `;
 
 export const MCP_SERVER_ENTRY = {
-  command: "agent-docker",
-  args: ["serve"],
+  command: "npx",
+  args: ["-y", "agent-docker-mcp", "serve"],
   cwd: "${workspaceFolder}",
   env: {},
 } as const;

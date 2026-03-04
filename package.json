@@ -1,5 +1,5 @@
 {
-  "name": "agent-docker",
+  "name": "agent-docker-mcp",
   "version": "0.1.0",
   "description": "Lightweight Docker sandbox CLI with MCP protocol support",
   "type": "module",
