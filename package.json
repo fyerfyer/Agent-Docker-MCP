@@ -33,15 +33,20 @@
   ],
   "dependencies": {
     "@clack/prompts": "^1.0.1",
+    "@libsql/client": "^0.17.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "commander": "^14.0.3",
     "dockerode": "^4.0.9",
+    "drizzle-orm": "^0.45.1",
+    "figlet": "^1.10.0",
     "picocolors": "^1.1.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/dockerode": "^4.0.1",
+    "@types/figlet": "^1.7.0",
     "@types/node": "^25.3.3",
+    "drizzle-kit": "^0.31.9",
     "typescript": "^5.9.3"
   }
 }
