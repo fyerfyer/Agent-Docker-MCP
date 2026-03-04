@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Command } from "commander";
 import * as p from "@clack/prompts";
 import color from "picocolors";
@@ -13,6 +14,8 @@ import { DEFAULT_IMAGE, type SandboxConfig, defaultConfig } from "./config.js";
 import { startMcpServer, type McpServerOptions } from "./mcp-server.js";
 import {
   COPILOT_INSTRUCTIONS,
+  CLAUDE_INSTRUCTIONS,
+  GEMINI_INSTRUCTIONS,
   CURSOR_RULES,
   MCP_SERVER_ENTRY,
 } from "./templates.js";
@@ -30,7 +33,7 @@ import {
 } from "./db/session.js";
 import { initDb } from "./db/index.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 function renderBanner(): string {
   try {
@@ -77,6 +80,27 @@ async function scaffoldProject(dir: string): Promise<void> {
     await fsp.writeFile(instructionsPath, COPILOT_INSTRUCTIONS, "utf8");
     p.log.success(`Created ${color.cyan(".github/copilot-instructions.md")}`);
   }
+
+  const writeAgentMd = async (mdName: string, instructions: string) => {
+    const mdPath = path.join(dir, mdName);
+    if (fs.existsSync(mdPath)) {
+      const content = await fsp.readFile(mdPath, "utf8");
+      if (!content.includes("Agent Docker -")) {
+        await fsp.appendFile(mdPath, "\n\n" + instructions, "utf8");
+        p.log.success(`Appended instructions to ${color.cyan(mdName)}`);
+      } else {
+        p.log.info(
+          `${color.dim(mdName)} already contains instructions — skipping`,
+        );
+      }
+    } else {
+      await fsp.writeFile(mdPath, instructions, "utf8");
+      p.log.success(`Created ${color.cyan(mdName)}`);
+    }
+  };
+
+  await writeAgentMd("CLAUDE.md", CLAUDE_INSTRUCTIONS);
+  await writeAgentMd("GEMINI.md", GEMINI_INSTRUCTIONS);
 
   const vscodeDir = path.join(dir, ".vscode");
   const mcpPath = path.join(vscodeDir, "mcp.json");
@@ -720,7 +744,7 @@ program
         if (opts.follow && prevTimestamp !== null) {
           const currentTs = new Date(log.timestamp).getTime();
           const diff = currentTs - prevTimestamp;
-          const delay = Math.min(diff / speed, 3000); 
+          const delay = Math.min(diff / speed, 3000);
           if (delay > 50) {
             await new Promise((resolve) => setTimeout(resolve, delay));
           }
@@ -796,4 +820,13 @@ process.on("SIGINT", async () => {
   process.exit(0);
 });
 
-program.parse();
+program.parseAsync(process.argv).catch((err: any) => {
+  if (err && err.json && err.json.message) {
+    p.log.error(`Docker Error: ${err.json.message}`);
+  } else if (err instanceof Error) {
+    p.log.error(err.message);
+  } else {
+    p.log.error(String(err));
+  }
+  process.exit(1);
+});

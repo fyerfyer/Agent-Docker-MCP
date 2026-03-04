@@ -1,5 +1,7 @@
 # agent-docker-mcp 🐳
 
+> The project is a lightweight & refactored version of [Agent-sandbox-platform](https://github.com/fyerfyer/Agent-sandbox-platform).
+
 > **Lightweight Docker sandbox CLI with Model Context Protocol (MCP) support.** Built for AI Agents (like Cursor), giving them a safe, isolated, and disposable environment to run code and commands.
 
 [![npm version](https://img.shields.io/npm/v/agent-docker.svg)](https://www.npmjs.com/package/agent-docker)
@@ -43,7 +45,13 @@ By running `npx agent-docker-mcp init` in your project root, the CLI does the he
 2. Auto-creates `.cursor/mcp.json` (or `.vscode/mcp.json`) for MCP integration.
 3. Auto-creates `.cursorrules` to instruct the AI to prefer the sandbox over the host shell.
 
-Once initialized, reload your IDE, and the AI agent will automatically have access to the `agent-docker` MCP tools!
+Then you need to go to `Settings` -> `Tools & MCP` and enable `agent-docker` MCP.
+
+Once initialized, the AI agent will automatically have access to the `agent-docker` MCP tools!
+
+### Copilot
+
+Just run `npx agent-docker-mcp init` in your project root, and once a project starts, the Agent will try starting MCP server itself!
 
 ## 📖 Basic Commands
 

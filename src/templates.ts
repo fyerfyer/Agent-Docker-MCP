@@ -61,8 +61,7 @@ WORKDIR /tmp
 CMD ["sleep", "infinity"]
 `;
 
-export const COPILOT_INSTRUCTIONS = `# Agent Docker - Copilot Instructions
-
+const AGENT_INSTRUCTIONS_BODY = `
 You have access to a Docker sandbox via the \`agent-docker\` MCP server. **Always use the sandbox tools for code execution instead of running commands directly on the host.**
 
 ## Core Principle
@@ -94,6 +93,12 @@ All code execution, builds, tests, and file operations should happen **inside th
 - For services like databases, Redis, or message queues, use **Docker Compose** (you have Docker CLI access), do NOT install them via apt-get.
 - If you need a completely different runtime, write a Dockerfile to \`.agent-docker/Dockerfile\` and call \`rebuild_sandbox\`.
 `;
+
+export const COPILOT_INSTRUCTIONS = `# Agent Docker - Copilot Instructions\n${AGENT_INSTRUCTIONS_BODY}`;
+
+export const CLAUDE_INSTRUCTIONS = `# Agent Docker - Claude Instructions\n${AGENT_INSTRUCTIONS_BODY}`;
+
+export const GEMINI_INSTRUCTIONS = `# Agent Docker - Gemini Instructions\n${AGENT_INSTRUCTIONS_BODY}`;
 
 export const CURSOR_RULES = `# Agent Docker - Cursor Rules
 
