@@ -1,3 +1,5 @@
+import type { ResourceLimits } from "./project-config.js";
+
 export const DEFAULT_IMAGE = "agent-docker-base:latest";
 
 export const DOCKER_SOCKET = "/var/run/docker.sock";
@@ -19,6 +21,10 @@ export interface SandboxConfig {
   autoRemove: boolean;
   name?: string;
   env?: string[];
+  network?: "host" | "bridge" | "none";
+  allowDocker?: boolean;
+  resources?: ResourceLimits;
+  protectPaths?: string[];
 }
 
 export const defaultConfig: Omit<SandboxConfig, "workDir"> = {
@@ -26,7 +32,8 @@ export const defaultConfig: Omit<SandboxConfig, "workDir"> = {
   autoRemove: false,
 };
 
-// 危险指令拦截
+// 危险指令拦截 — 防呆提示，非安全边界。
+// 真正的隔离边界由 cgroups / capabilities / no-new-privileges / 非 root 用户提供。
 export const DANGEROUS_PATTERNS: { pattern: RegExp; reason: string }[] = [
   {
     pattern: /\brm\s+(-[^\s]*\s+)*\/\s*$/,

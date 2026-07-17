@@ -1,5 +1,6 @@
 /**
  *  exec_bash                  – 在沙箱内执行 bash 命令
+ *  get_job_output             – 获取后台任务输出
  *  install_system_dependency  – 以 root 权限热安装系统依赖
  *  rebuild_sandbox            – 根据 .agent-docker/Dockerfile 重建沙箱
  *  get_env                    – 读取沙箱内的环境变量
@@ -19,6 +20,15 @@ import { VERSION } from "./version.js";
 import { existsSync } from "node:fs";
 import { createSession, endSession, appendLog } from "./db/session.js";
 import { initDb } from "./db/index.js";
+import { resolveSandboxOptions } from "./project-config.js";
+import { truncateHeadTail, DEFAULT_MAX_OUTPUT_CHARS } from "./output.js";
+import {
+  createJob,
+  appendJobOutput,
+  finishJob,
+  failJob,
+  getJob,
+} from "./jobs.js";
 
 async function resolveContainer(
   manager: SandboxManager,
@@ -52,6 +62,9 @@ CRITICAL RULES FOR LLMs / AGENTS:
 3. NO FILE SYSTEM TOOLS NEEDED: The sandbox uses identity-mount. All your local file reading/writing tools work natively. Just edit files using your built-in edit tools, they sync instantly to the container.
 4. DEPENDENCIES: If you need a database/redis, orchestrate via \`docker-compose.yml\`. If you need root system libraries (jq, make, curl), use \`install_system_dependency\`. Do NOT use host \`apt-get\`.
 5. DO NOT fallback to host tools if MCP fails. If \`exec_bash\` returns an argument error (-32602), it means YOU formatted the arguments wrong. Fix your JSON instead of giving up.
+6. LONG COMMANDS: For dev servers, watch mode, or anything long-lived, use exec_bash with background=true and poll via get_job_output. Do not block on foreground exec for these.
+7. OUTPUT LIMITS: exec_bash output is truncated head+tail beyond maxOutputChars (default ${DEFAULT_MAX_OUTPUT_CHARS}). If you need full output, redirect to a file and read it with your file tools.
+8. STRICT MODE: If docker commands fail with "Cannot connect to the Docker daemon", the sandbox is running in strict mode (no DooD). Run services directly or ask the user to relax the config.
 
 WORKFLOW:
 - Edit files using your normal built-in local file editing/writing tools.
@@ -82,29 +95,44 @@ export function createMcpServer(
   server.registerTool(
     "exec_bash",
     {
+      title: "Execute Bash",
       description:
         "Execute a bash command inside the Docker sandbox and return stdout/stderr. " +
-        "All commands run in an isolated container with the project directory identity-mounted. " +
+        "Output is truncated head+tail if it exceeds maxOutputChars. " +
+        "Set background=true for long-running commands (dev servers, watch mode) and poll with get_job_output. " +
         "The sandbox runs as a non-root user. Use install_system_dependency for packages requiring root.",
       inputSchema: z.object({
         command: z.string().describe("The bash command to execute"),
         workDir: z
           .string()
           .optional()
-          .describe(
-            `Working directory inside the container (default: ${projectDir})`,
-          ),
+          .describe(`Working directory inside the container (default: ${projectDir})`),
         timeout: z
           .number()
           .optional()
-          .describe("Timeout in milliseconds (default: no timeout)"),
+          .describe("Timeout in milliseconds (default: no timeout). Ignored when background=true."),
+        background: z
+          .boolean()
+          .optional()
+          .describe("Run in background and return a jobId immediately (default: false)"),
+        maxOutputChars: z
+          .number()
+          .optional()
+          .describe(`Per-stream output cap in chars (default: ${DEFAULT_MAX_OUTPUT_CHARS})`),
         containerId: z
           .string()
           .optional()
           .describe("Target container ID (auto-detected if omitted)"),
       }),
+      outputSchema: z.object({
+        stdout: z.string(),
+        stderr: z.string(),
+        exitCode: z.number(),
+        truncated: z.boolean(),
+      }),
+      annotations: { destructiveHint: true, openWorldHint: false },
     },
-    async ({ command, workDir, timeout, containerId }) => {
+    async ({ command, workDir, timeout, background, maxOutputChars, containerId }) => {
       const cid = await resolveContainer(manager, containerId);
 
       if (sessionId) {
@@ -113,6 +141,35 @@ export function createMcpServer(
         );
       }
 
+      // 后台模式：立即返回 jobId
+      if (background) {
+        const job = createJob(command);
+        execInContainer(docker, cid, command, {
+          workDir: workDir ?? projectDir,
+          streamStdout: false,
+          streamStderr: false,
+          onStdout: (d) => appendJobOutput(job, d),
+          onStderr: (d) => appendJobOutput(job, d),
+        })
+          .then((r) => finishJob(job, r.exitCode))
+          .catch((e) => failJob(job, e));
+        return {
+          structuredContent: {
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+            truncated: false,
+          },
+          content: [
+            {
+              type: "text",
+              text: `Started background job ${job.id}. Poll with get_job_output({jobId: "${job.id}"}).`,
+            },
+          ],
+        };
+      }
+
+      // 前台模式（现状逻辑 + 截断 + structuredContent）
       const cmd = timeout
         ? `timeout ${Math.ceil(timeout / 1000)} bash -c ${JSON.stringify(command)}`
         : command;
@@ -136,17 +193,81 @@ export function createMcpServer(
         }
       }
 
-      const output = [
-        result.stdout ? `STDOUT:\n${result.stdout}` : "",
-        result.stderr ? `STDERR:\n${result.stderr}` : "",
+      const out = truncateHeadTail(result.stdout, maxOutputChars);
+      const err = truncateHeadTail(result.stderr, maxOutputChars);
+
+      const text = [
+        out.text ? `STDOUT:\n${out.text}` : "",
+        err.text ? `STDERR:\n${err.text}` : "",
         `EXIT CODE: ${result.exitCode}`,
       ]
         .filter(Boolean)
         .join("\n\n");
 
       return {
-        content: [{ type: "text", text: output }],
+        structuredContent: {
+          stdout: out.text,
+          stderr: err.text,
+          exitCode: result.exitCode,
+          truncated: out.truncated || err.truncated,
+        },
+        content: [{ type: "text", text }],
         isError: result.exitCode !== 0,
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_job_output",
+    {
+      title: "Get Job Output",
+      description:
+        "Poll the status and buffered output of a background job started by exec_bash(background=true).",
+      inputSchema: z.object({
+        jobId: z.string().describe("Job ID returned by exec_bash background mode"),
+        maxChars: z
+          .number()
+          .optional()
+          .describe("Return at most this many chars from the END of the buffer (default: 20000)"),
+      }),
+      outputSchema: z.object({
+        status: z.enum(["running", "exited", "error"]),
+        exitCode: z.number().optional(),
+        output: z.string(),
+        truncated: z.boolean(),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ jobId, maxChars }) => {
+      const job = getJob(jobId);
+      if (!job) {
+        return {
+          content: [{ type: "text", text: `Job not found: ${jobId}` }],
+          isError: true,
+        };
+      }
+      const cap = maxChars ?? 20_000;
+      const truncated = job.buffer.length > cap;
+      const output = truncated
+        ? job.buffer.slice(job.buffer.length - cap)
+        : job.buffer;
+      const text = [
+        `STATUS: ${job.status}` +
+          (job.exitCode !== undefined ? ` (exit ${job.exitCode})` : "") +
+          (job.error ? ` — ${job.error}` : ""),
+        output ? `OUTPUT:\n${output}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      return {
+        structuredContent: {
+          status: job.status,
+          exitCode: job.exitCode,
+          output,
+          truncated,
+        },
+        content: [{ type: "text", text }],
+        isError: job.status === "error",
       };
     },
   );
@@ -154,6 +275,7 @@ export function createMcpServer(
   server.registerTool(
     "install_system_dependency",
     {
+      title: "Install System Dependency",
       description:
         "Install system packages into the sandbox using root privileges. " +
         "Use this when you need system-level tools (e.g. jq, make, curl, build-essential) " +
@@ -167,6 +289,11 @@ export function createMcpServer(
           ),
         containerId: z.string().optional(),
       }),
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ packages, containerId }) => {
       const cid = await resolveContainer(manager, containerId);
@@ -276,6 +403,7 @@ export function createMcpServer(
   server.registerTool(
     "rebuild_sandbox",
     {
+      title: "Rebuild Sandbox",
       description:
         "Rebuild the sandbox from a custom Dockerfile at `.agent-docker/Dockerfile` in the project root. " +
         "Use this when you need a fundamentally different base environment (e.g. different OS, " +
@@ -284,9 +412,46 @@ export function createMcpServer(
       inputSchema: z.object({
         containerId: z.string().optional(),
       }),
+      annotations: { destructiveHint: true, openWorldHint: false },
     },
-    async ({ containerId }) => {
+    async ({ containerId }, extra) => {
       const cid = await resolveContainer(manager, containerId);
+
+      // 1. elicitation 确认（渐进增强：客户端不支持则按现状直接执行）
+      try {
+        const answer = await server.server.elicitInput({
+          message:
+            "rebuild_sandbox will DESTROY the current container and replace it with a new image " +
+            "built from .agent-docker/Dockerfile. Proceed?",
+          requestedSchema: {
+            type: "object",
+            properties: { confirm: { type: "boolean", title: "Confirm rebuild" } },
+            required: ["confirm"],
+          },
+        });
+        if (answer.action !== "accept" || answer.content?.confirm !== true) {
+          return {
+            content: [{ type: "text", text: "Rebuild cancelled by user." }],
+          };
+        }
+      } catch {
+        // 客户端未声明 elicitation 能力 → 保持现状直接执行
+      }
+
+      const sendProgress = async (
+        progress: number,
+        total: number,
+        message: string,
+      ) => {
+        const progressToken = extra._meta?.progressToken;
+        if (progressToken === undefined) return;
+        await extra.sendNotification({
+          method: "notifications/progress",
+          params: { progressToken, progress, total, message },
+        });
+      };
+
+      await sendProgress(1, 4, "Validating Dockerfile...");
 
       // 1. 验证 Dockerfile 是否存在
       const dockerfilePath = `${projectDir}/.agent-docker/Dockerfile`;
@@ -306,6 +471,7 @@ export function createMcpServer(
       }
 
       // 2. 使用 Dockerfile 进行构建
+      await sendProgress(2, 4, "Building image from .agent-docker/Dockerfile...");
       const sessionTag = randomBytes(4).toString("hex");
       const customImageName = `agent-docker-custom:${sessionTag}`;
 
@@ -342,6 +508,7 @@ export function createMcpServer(
       }
 
       // 3. 获取当前容器信息
+      await sendProgress(3, 4, "Replacing container...");
       const containerObj = docker.getContainer(cid);
       const info = await containerObj.inspect();
       const oldName = info.Name.replace(/^\//, "");
@@ -363,6 +530,7 @@ export function createMcpServer(
       };
 
       const newSandbox = await manager.create(newConfig);
+      await sendProgress(4, 4, "Health check...");
       const healthy = await healthCheck(docker, newSandbox.id);
 
       return {
@@ -384,8 +552,8 @@ export function createMcpServer(
   server.registerTool(
     "get_env",
     {
-      description:
-        "Read environment variables from the running sandbox container",
+      title: "Get Environment Variables",
+      description: "Read environment variables from the running sandbox container",
       inputSchema: z.object({
         names: z
           .array(z.string())
@@ -395,6 +563,7 @@ export function createMcpServer(
           ),
         containerId: z.string().optional(),
       }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ names, containerId }) => {
       const cid = await resolveContainer(manager, containerId);
@@ -425,6 +594,7 @@ export function createMcpServer(
 export interface McpServerOptions {
   projectDir?: string;
   image?: string;
+  strict?: boolean;
 }
 
 export async function startMcpServer(
@@ -458,10 +628,18 @@ export async function startMcpServer(
   } else {
     console.error(`Creating new sandbox for ${projectDir}...`);
     await ensureImage(docker, image, true);
+    const resolved = resolveSandboxOptions(projectDir, {
+      strict: options?.strict,
+      image,
+    });
     const config: SandboxConfig = {
       ...defaultConfig,
-      image,
+      image: resolved.image ?? image,
       workDir: projectDir,
+      network: resolved.network,
+      allowDocker: resolved.allowDocker,
+      resources: resolved.resources,
+      protectPaths: resolved.protectPaths,
     };
     existing = await manager.create(config);
     const healthy = await healthCheck(docker, existing.id);

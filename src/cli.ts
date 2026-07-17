@@ -11,6 +11,7 @@ import { ensureDocker, ensureImage } from "./env.js";
 import { SandboxManager } from "./sandbox.js";
 import { execInContainer, healthCheck, shellJoin } from "./exec.js";
 import { DEFAULT_IMAGE, type SandboxConfig, defaultConfig } from "./config.js";
+import { resolveSandboxOptions } from "./project-config.js";
 import { startMcpServer, type McpServerOptions } from "./mcp-server.js";
 import { VERSION } from "./version.js";
 import {
@@ -214,8 +215,17 @@ program
     "Start the MCP server after initialization (blocks the terminal)",
     false,
   )
+  .option(
+    "--strict",
+    "Disable DooD, isolate network, shadow .env",
+  )
   .action(
-    async (opts: { image: string; skipScaffold: boolean; serve: boolean }) => {
+    async (opts: {
+      image: string;
+      skipScaffold: boolean;
+      serve: boolean;
+      strict?: boolean;
+    }) => {
       console.log(renderBanner());
       p.intro(color.bgCyan(color.black(" agent-docker init ")));
 
@@ -243,11 +253,19 @@ program
         }
       } else {
         p.log.info("Creating new sandbox...");
+        const resolved = resolveSandboxOptions(workDir, {
+          strict: opts.strict,
+          image: opts.image,
+        });
         const config: SandboxConfig = {
           ...defaultConfig,
-          image: opts.image,
+          image: resolved.image ?? opts.image,
           workDir,
           autoRemove: false,
+          network: resolved.network,
+          allowDocker: resolved.allowDocker,
+          resources: resolved.resources,
+          protectPaths: resolved.protectPaths,
         };
         const info = await manager.create(config);
         const healthy = await healthCheck(docker, info.id);
@@ -259,7 +277,11 @@ program
 
       if (opts.serve) {
         p.outro(color.green("Environment is ready! Starting MCP Server..."));
-        await startMcpServer({ projectDir: workDir, image: opts.image });
+        await startMcpServer({
+          projectDir: workDir,
+          image: opts.image,
+          strict: opts.strict,
+        });
       } else {
         p.outro(color.green("Environment is ready!"));
       }
@@ -274,6 +296,10 @@ program
   .option("--rm", "Automatically remove container on exit", false)
   .option("-e, --env <vars...>", "Environment variables (KEY=VALUE)")
   .option("--resume", "Resume an existing sandbox if available", false)
+  .option(
+    "--strict",
+    "Disable DooD, isolate network, shadow .env",
+  )
   .action(
     async (opts: {
       image: string;
@@ -281,6 +307,7 @@ program
       rm: boolean;
       env?: string[];
       resume: boolean;
+      strict?: boolean;
     }) => {
       console.log(renderBanner());
       p.intro(color.bgCyan(color.black(" agent-docker start ")));
@@ -325,13 +352,22 @@ program
         }
       }
 
+      const resolved = resolveSandboxOptions(workDir, {
+        strict: opts.strict,
+        image: opts.image,
+        env: opts.env,
+      });
       const config: SandboxConfig = {
         ...defaultConfig,
-        image: opts.image,
+        image: resolved.image ?? opts.image,
         workDir,
         autoRemove: opts.rm,
         name: opts.name,
-        env: opts.env,
+        env: resolved.env,
+        network: resolved.network,
+        allowDocker: resolved.allowDocker,
+        resources: resolved.resources,
+        protectPaths: resolved.protectPaths,
       };
 
       const info = await manager.create(config);
@@ -779,17 +815,24 @@ program
   )
   .option("--project-dir <dir>", "Project directory to bind (default: cwd)")
   .option("-i, --image <image>", "Docker image to use", DEFAULT_IMAGE)
-  .action(async (opts: { projectDir?: string; image?: string }) => {
-    const mcpOpts: McpServerOptions = {};
-    if (opts.projectDir) {
-      mcpOpts.projectDir = opts.projectDir;
-    }
-    if (opts.image) {
-      mcpOpts.image = opts.image;
-    }
+  .option(
+    "--strict",
+    "Disable DooD, isolate network, shadow .env",
+  )
+  .action(
+    async (opts: { projectDir?: string; image?: string; strict?: boolean }) => {
+      const mcpOpts: McpServerOptions = {};
+      if (opts.projectDir) {
+        mcpOpts.projectDir = opts.projectDir;
+      }
+      if (opts.image) {
+        mcpOpts.image = opts.image;
+      }
+      mcpOpts.strict = opts.strict;
 
-    await startMcpServer(mcpOpts);
-  });
+      await startMcpServer(mcpOpts);
+    },
+  );
 
 process.on("SIGINT", async () => {
   p.log.warn("\nReceived SIGINT, shutting down...");

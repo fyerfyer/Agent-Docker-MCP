@@ -73,6 +73,7 @@ All code execution, builds, tests, and file operations should happen **inside th
 | Tool | Purpose |
 |------|---------|
 | \`exec_bash\` | Execute shell commands inside the sandbox container |
+| \`get_job_output\` | Poll output of a background exec_bash job |
 | \`install_system_dependency\` | Install system packages (apt) with root privileges |
 | \`rebuild_sandbox\` | Rebuild sandbox from \`.agent-docker/Dockerfile\` |
 | \`get_env\` | Read environment variables from the sandbox |

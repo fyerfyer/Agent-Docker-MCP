@@ -25,6 +25,16 @@ export {
   defaultConfig,
 } from "./config.js";
 export {
+  loadProjectConfig,
+  resolveSandboxOptions,
+  resourcesSchema,
+  projectConfigSchema,
+  DEFAULT_RESOURCES,
+  type ProjectConfig,
+  type ResourceLimits,
+  type ResolvedSandboxOptions,
+} from "./project-config.js";
+export {
   createMcpServer,
   startMcpServer,
   type McpServerOptions,

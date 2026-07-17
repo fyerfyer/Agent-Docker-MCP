@@ -5,6 +5,7 @@ import fs from "node:fs";
 import * as p from "@clack/prompts";
 import os from "node:os";
 import { randomBytes } from "node:crypto";
+import path from "node:path";
 import {
   type SandboxConfig,
   type SandboxState,
@@ -13,6 +14,7 @@ import {
   LABEL_PREFIX,
   defaultConfig,
 } from "./config.js";
+import { DEFAULT_RESOURCES } from "./project-config.js";
 import { getHostUser, ensureImage } from "./env.js";
 
 export interface SandboxInfo {
@@ -79,12 +81,15 @@ export class SandboxManager {
     s.start(`Creating sandbox ${containerName}...`);
 
     try {
+      const resources = config.resources ?? DEFAULT_RESOURCES;
+      const allowDocker = config.allowDocker ?? true;
+
       // 让容器和宿主机 bind 同一个目录
       const binds: string[] = [`${config.workDir}:${config.workDir}`];
 
-      // Docker socket for DooD
+      // Docker socket for DooD (strict mode 跳过)
       const groupAdd: string[] = [];
-      if (fs.existsSync(DOCKER_SOCKET)) {
+      if (allowDocker && fs.existsSync(DOCKER_SOCKET)) {
         binds.push(`${DOCKER_SOCKET}:${DOCKER_SOCKET}`);
         try {
           const socketGid = fs.statSync(DOCKER_SOCKET).gid;
@@ -99,6 +104,28 @@ export class SandboxManager {
       if (fs.existsSync(gitDir)) {
         binds.push(`${gitDir}:${gitDir}:ro`);
       }
+
+      // protectPaths：用 /dev/null 只读遮蔽文件
+      for (const rel of config.protectPaths ?? []) {
+        const abs = path.resolve(config.workDir, rel);
+        try {
+          if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+            binds.push(`/dev/null:${abs}:ro`);
+          } else if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) {
+            this.logInfo(
+              `Skipping protectPaths entry ${rel}: directories are not supported`,
+            );
+          }
+        } catch {
+          // ignore stat errors
+        }
+      }
+
+      // 网络：未指定时维持现状默认；host 仅 Linux 有效，其他平台回落 bridge
+      const network =
+        config.network ?? (os.platform() === "linux" ? "host" : "bridge");
+      const networkMode =
+        network === "host" && os.platform() !== "linux" ? "bridge" : network;
 
       const container = await this.docker.createContainer({
         Image: config.image,
@@ -116,8 +143,16 @@ export class SandboxManager {
         HostConfig: {
           Binds: binds,
           AutoRemove: config.autoRemove,
-          NetworkMode: os.platform() === "linux" ? "host" : "default",
+          NetworkMode: networkMode,
           ...(groupAdd.length > 0 ? { GroupAdd: groupAdd } : {}),
+          // 加固默认值（对所有新沙箱生效）
+          Memory: resources.memoryMb * 1024 * 1024,
+          NanoCpus: Math.round(resources.cpus * 1e9),
+          PidsLimit: resources.pidsLimit,
+          Init: true,
+          CapDrop: ["ALL"],
+          CapAdd: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"],
+          SecurityOpt: ["no-new-privileges:true"],
         },
         Tty: true,
         OpenStdin: true,
