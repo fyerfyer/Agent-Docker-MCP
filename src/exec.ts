@@ -20,6 +20,16 @@ export function validateCommand(cmd: string): void {
   }
 }
 
+/** POSIX shell 安全拼接：安全字符原样放行，其余单引号包裹并转义内部单引号 */
+export function shellQuoteArg(arg: string): string {
+  if (/^[a-zA-Z0-9_\-./:=,+%@]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
+export function shellJoin(args: string[]): string {
+  return args.map(shellQuoteArg).join(" ");
+}
+
 // 在 Docker 内执行命令
 export async function execInContainer(
   docker: Docker,

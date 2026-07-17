@@ -15,6 +15,7 @@ import { execInContainer, execQuiet, healthCheck } from "./exec.js";
 import { DEFAULT_IMAGE, type SandboxConfig, defaultConfig } from "./config.js";
 import { SandboxManager } from "./sandbox.js";
 import { ensureDocker, ensureImage } from "./env.js";
+import { VERSION } from "./version.js";
 import { existsSync } from "node:fs";
 import { createSession, endSession, appendLog } from "./db/session.js";
 import { initDb } from "./db/index.js";
@@ -34,6 +35,12 @@ async function resolveContainer(
     );
   }
   return sandbox.id;
+}
+
+export const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function isValidEnvName(name: string): boolean {
+  return ENV_NAME_PATTERN.test(name);
 }
 
 function buildServerInstructions(projectDir: string): string {
@@ -61,7 +68,7 @@ export function createMcpServer(
   const server = new McpServer(
     {
       name: "agent-docker",
-      version: "0.2.0",
+      version: VERSION,
     },
     {
       capabilities: {
@@ -167,6 +174,23 @@ export function createMcpServer(
       if (packages.length === 0) {
         return {
           content: [{ type: "text", text: "No packages specified." }],
+          isError: true,
+        };
+      }
+
+      // 探测 apt-get：非 Debian/Ubuntu 镜像给出明确错误
+      const aptCheck = await execQuiet(docker, cid, "command -v apt-get");
+      if (aptCheck.exitCode !== 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "apt-get not found in this sandbox image. " +
+                "install_system_dependency only supports Debian/Ubuntu-based images. " +
+                "For other distributions, write a custom .agent-docker/Dockerfile and call rebuild_sandbox.",
+            },
+          ],
           isError: true,
         };
       }
@@ -374,6 +398,15 @@ export function createMcpServer(
     },
     async ({ names, containerId }) => {
       const cid = await resolveContainer(manager, containerId);
+
+      for (const n of names ?? []) {
+        if (!isValidEnvName(n)) {
+          return {
+            content: [{ type: "text", text: `Invalid env var name: ${n}` }],
+            isError: true,
+          };
+        }
+      }
 
       if (names && names.length > 0) {
         const cmds = names.map((n) => `echo "${n}=\${${n}:-}"`).join(" && ");

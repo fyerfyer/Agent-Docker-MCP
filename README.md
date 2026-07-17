@@ -5,7 +5,7 @@
 > **Lightweight Docker sandbox CLI with Model Context Protocol (MCP) support.** Built for AI Agents (like Cursor), giving them a safe, isolated, and disposable environment to run code and commands.
 
 [![npm version](https://img.shields.io/npm/v/agent-docker.svg)](https://www.npmjs.com/package/agent-docker)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 When working with local AI coding assistants, you often want them to run tests, install dependencies, or execute shell commands without messing up your host machine. `agent-docker-mcp` seamlessly creates an ephemeral Docker container mapped to your project, exposing it as an MCP server for the AI to use safely.
 

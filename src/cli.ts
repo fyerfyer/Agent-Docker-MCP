@@ -9,9 +9,10 @@ import path from "node:path";
 import figlet from "figlet";
 import { ensureDocker, ensureImage } from "./env.js";
 import { SandboxManager } from "./sandbox.js";
-import { execInContainer, healthCheck } from "./exec.js";
+import { execInContainer, healthCheck, shellJoin } from "./exec.js";
 import { DEFAULT_IMAGE, type SandboxConfig, defaultConfig } from "./config.js";
 import { startMcpServer, type McpServerOptions } from "./mcp-server.js";
+import { VERSION } from "./version.js";
 import {
   COPILOT_INSTRUCTIONS,
   CLAUDE_INSTRUCTIONS,
@@ -32,8 +33,6 @@ import {
   shortenPath,
 } from "./db/session.js";
 import { initDb } from "./db/index.js";
-
-const VERSION = "0.1.1";
 
 function renderBanner(): string {
   try {
@@ -504,7 +503,7 @@ program
       containerId = existing.id;
     }
 
-    const command = cmd.join(" ");
+    const command = shellJoin(cmd);
     const result = await execInContainer(docker, containerId, command);
     process.exit(result.exitCode);
   });
@@ -800,11 +799,17 @@ process.on("SIGINT", async () => {
       socketPath: "/var/run/docker.sock",
     });
     const manager = new SandboxManager(docker);
+    const workDir = process.cwd();
     const sandboxes = await manager.list();
-    const active = sandboxes.filter((s) => s.state === "active");
+    // 只停当前项目的沙箱，不碰其他项目
+    const active = sandboxes.filter(
+      (s) => s.state === "active" && s.projectDir === workDir,
+    );
 
     if (active.length > 0) {
-      p.log.info(`Stopping ${active.length} active sandbox(es)...`);
+      p.log.info(
+        `Stopping ${active.length} active sandbox(es) for this project...`,
+      );
       for (const sandbox of active) {
         try {
           await manager.stop(sandbox.id);

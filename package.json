@@ -1,6 +1,6 @@
 {
   "name": "agent-docker-mcp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Lightweight Docker sandbox CLI with MCP protocol support",
   "type": "module",
   "main": "dist/index.js",
@@ -12,7 +12,9 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/cli.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "AGENT_DOCKER_E2E=1 vitest run tests/e2e"
   },
   "keywords": [
     "docker",
@@ -22,7 +24,7 @@
     "agent"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "packageManager": "pnpm@10.26.1",
   "engines": {
     "node": ">=18.0.0"
@@ -34,7 +36,7 @@
   "dependencies": {
     "@clack/prompts": "^1.0.1",
     "@libsql/client": "^0.17.0",
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.3",
     "dockerode": "^4.0.9",
     "drizzle-orm": "^0.45.1",
@@ -47,6 +49,7 @@
     "@types/figlet": "^1.7.0",
     "@types/node": "^25.3.3",
     "drizzle-kit": "^0.31.9",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
   }
 }

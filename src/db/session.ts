@@ -149,7 +149,7 @@ export async function getSessionLogs(
     .select()
     .from(logs)
     .where(eq(logs.sessionId, sessionId))
-    .orderBy(logs.timestamp);
+    .orderBy(logs.id);
 }
 
 export function formatDuration(
