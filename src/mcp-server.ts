@@ -595,6 +595,7 @@ export interface McpServerOptions {
   projectDir?: string;
   image?: string;
   strict?: boolean;
+  composeProxy?: boolean;
 }
 
 export async function startMcpServer(
@@ -632,12 +633,17 @@ export async function startMcpServer(
       strict: options?.strict,
       image,
     });
+    const composeProxy =
+      options?.composeProxy !== undefined
+        ? options.composeProxy
+        : resolved.composeProxy;
     const config: SandboxConfig = {
       ...defaultConfig,
       image: resolved.image ?? image,
       workDir: projectDir,
       network: resolved.network,
       allowDocker: resolved.allowDocker,
+      composeProxy,
       resources: resolved.resources,
       protectPaths: resolved.protectPaths,
     };

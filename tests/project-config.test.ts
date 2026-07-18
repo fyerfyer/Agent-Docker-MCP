@@ -33,6 +33,7 @@ describe("project-config", () => {
     const cfg = loadProjectConfig(tmpDir);
     expect(cfg.strict).toBe(false);
     expect(cfg.allowDocker).toBe(true);
+    expect(cfg.composeProxy).toBe(true);
     expect(cfg.network).toBeUndefined();
     expect(cfg.resources).toBeUndefined();
     expect(cfg.env).toBeUndefined();
@@ -59,8 +60,22 @@ describe("project-config", () => {
     writeConfig({ strict: true });
     const resolved = resolveSandboxOptions(tmpDir);
     expect(resolved.allowDocker).toBe(false);
+    expect(resolved.composeProxy).toBe(true);
     expect(resolved.network).toBe("bridge");
     expect(resolved.protectPaths).toContain(".env");
+  });
+
+  it("composeProxy can be disabled in strict mode via config", () => {
+    writeConfig({ strict: true, composeProxy: false });
+    const resolved = resolveSandboxOptions(tmpDir);
+    expect(resolved.allowDocker).toBe(false);
+    expect(resolved.composeProxy).toBe(false);
+  });
+
+  it("composeProxy is false in non-strict mode regardless of config", () => {
+    writeConfig({ strict: false, composeProxy: true });
+    const resolved = resolveSandboxOptions(tmpDir);
+    expect(resolved.composeProxy).toBe(false);
   });
 
   it("explicit network in file overrides strict default", () => {

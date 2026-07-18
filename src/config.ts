@@ -23,6 +23,7 @@ export interface SandboxConfig {
   env?: string[];
   network?: "host" | "bridge" | "none";
   allowDocker?: boolean;
+  composeProxy?: boolean;
   resources?: ResourceLimits;
   protectPaths?: string[];
 }
@@ -31,6 +32,18 @@ export const defaultConfig: Omit<SandboxConfig, "workDir"> = {
   image: DEFAULT_IMAGE,
   autoRemove: false,
 };
+
+// Socket proxy sidecar configuration
+export const SIDECAR_IMAGE = "wollomatic/socket-proxy:1";
+export const FILTER_IMAGE = "node:20-bookworm-slim";
+export const PROXY_NETWORK_PREFIX = "agent-docker-proxy";
+export const FILTER_HOSTNAME = "filter-proxy";
+export const SIDECAR_HOSTNAME = "socket-proxy";
+export const SIDECAR_LABELS = {
+  IS_SIDECAR: `${LABEL_PREFIX}.is-sidecar`,
+  IS_FILTER: `${LABEL_PREFIX}.is-filter`,
+  SIDECAR_FOR: `${LABEL_PREFIX}.sidecar-for`,
+} as const;
 
 // 危险指令拦截 — 防呆提示，非安全边界。
 // 真正的隔离边界由 cgroups / capabilities / no-new-privileges / 非 root 用户提供。

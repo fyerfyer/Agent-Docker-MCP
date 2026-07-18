@@ -264,6 +264,7 @@ program
           autoRemove: false,
           network: resolved.network,
           allowDocker: resolved.allowDocker,
+          composeProxy: resolved.composeProxy,
           resources: resolved.resources,
           protectPaths: resolved.protectPaths,
         };
@@ -366,6 +367,7 @@ program
         env: resolved.env,
         network: resolved.network,
         allowDocker: resolved.allowDocker,
+        composeProxy: resolved.composeProxy,
         resources: resolved.resources,
         protectPaths: resolved.protectPaths,
       };

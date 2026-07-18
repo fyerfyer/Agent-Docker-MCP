@@ -13,6 +13,7 @@ export const projectConfigSchema = z.object({
   strict: z.boolean().default(false),
   network: z.enum(["host", "bridge", "none"]).optional(),
   allowDocker: z.boolean().default(true),
+  composeProxy: z.boolean().default(true),
   resources: resourcesSchema.optional(),
   env: z.array(z.string()).optional(),
   protectPaths: z.array(z.string()).default([]),
@@ -54,6 +55,7 @@ export interface ResolvedSandboxOptions {
   image?: string;
   network: "host" | "bridge" | "none" | undefined;
   allowDocker: boolean;
+  composeProxy: boolean;
   resources: ResourceLimits;
   env?: string[];
   protectPaths: string[];
@@ -70,6 +72,7 @@ export function resolveSandboxOptions(
     image: cliFlags.image ?? cfg.image,
     network: cfg.network ?? (strict ? "bridge" : undefined),
     allowDocker: strict ? false : cfg.allowDocker,
+    composeProxy: strict ? cfg.composeProxy : false,
     resources: { ...DEFAULT_RESOURCES, ...cfg.resources },
     env: [...(cfg.env ?? []), ...(cliFlags.env ?? [])],
     protectPaths: strict

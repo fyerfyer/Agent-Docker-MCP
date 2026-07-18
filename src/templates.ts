@@ -92,6 +92,7 @@ All code execution, builds, tests, and file operations should happen **inside th
 - The \`.git\` directory is mounted as **read-only**. You can read git history but cannot modify it.
 - The sandbox runs as a **non-root user**. For system packages, use \`install_system_dependency\`.
 - For services like databases, Redis, or message queues, use **Docker Compose** (you have Docker CLI access), do NOT install them via apt-get.
+- In **strict mode**, Docker commands still work but go through a filtered socket proxy. Privileged containers, host network, host pid, device mounts, and bind mounts outside the project directory are blocked.
 - If you need a completely different runtime, write a Dockerfile to \`.agent-docker/Dockerfile\` and call \`rebuild_sandbox\`.
 `;
 

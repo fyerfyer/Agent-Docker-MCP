@@ -13,9 +13,18 @@ import {
   LABELS,
   LABEL_PREFIX,
   defaultConfig,
+  SIDECAR_LABELS,
 } from "./config.js";
 import { DEFAULT_RESOURCES } from "./project-config.js";
 import { getHostUser, ensureImage } from "./env.js";
+import {
+  type SidecarInfo,
+  createSidecar,
+  startSidecar,
+  stopSidecar,
+  removeSidecar,
+  findSidecarForSandbox,
+} from "./sidecar.js";
 
 export interface SandboxInfo {
   id: string;
@@ -24,6 +33,7 @@ export interface SandboxInfo {
   image: string;
   projectDir: string;
   createdAt: string;
+  sidecar?: SidecarInfo;
 }
 
 function generateSessionId(): string {
@@ -80,9 +90,12 @@ export class SandboxManager {
     const s = this.createSpinner();
     s.start(`Creating sandbox ${containerName}...`);
 
+    let sidecar: SidecarInfo | undefined;
+
     try {
       const resources = config.resources ?? DEFAULT_RESOURCES;
       const allowDocker = config.allowDocker ?? true;
+      const composeProxy = config.composeProxy ?? false;
 
       // 让容器和宿主机 bind 同一个目录
       const binds: string[] = [`${config.workDir}:${config.workDir}`];
@@ -124,8 +137,22 @@ export class SandboxManager {
       // 网络：未指定时维持现状默认；host 仅 Linux 有效，其他平台回落 bridge
       const network =
         config.network ?? (os.platform() === "linux" ? "host" : "bridge");
-      const networkMode =
+      let networkMode: string =
         network === "host" && os.platform() !== "linux" ? "bridge" : network;
+
+      const env = ["HOME=/tmp", ...(config.env ?? [])];
+
+      // strict 模式下启用 compose proxy sidecar
+      if (!allowDocker && composeProxy) {
+        sidecar = await createSidecar(
+          this.docker,
+          config.workDir,
+          containerName,
+          this.quiet,
+        );
+        networkMode = sidecar.networkName;
+        env.push("DOCKER_HOST=tcp://filter-proxy:2376");
+      }
 
       const container = await this.docker.createContainer({
         Image: config.image,
@@ -133,7 +160,7 @@ export class SandboxManager {
         Cmd: ["sleep", "infinity"],
         User: `${uid}:${gid}`,
         WorkingDir: config.workDir,
-        Env: ["HOME=/tmp", ...(config.env ?? [])],
+        Env: env,
         Labels: {
           [LABELS.MANAGED_BY]: LABEL_PREFIX,
           [LABELS.PROJECT_DIR]: config.workDir,
@@ -171,9 +198,17 @@ export class SandboxManager {
         image: config.image,
         projectDir: config.workDir,
         createdAt: new Date().toISOString(),
+        sidecar,
       };
     } catch (err) {
       s.stop("Failed to create sandbox");
+      if (sidecar) {
+        try {
+          await removeSidecar(this.docker, sidecar, true, this.quiet);
+        } catch {
+          // ignore cleanup errors
+        }
+      }
       throw err;
     }
   }
@@ -183,8 +218,24 @@ export class SandboxManager {
     const s = this.createSpinner();
     s.start(`Stopping sandbox ${containerId.slice(0, 12)}...`);
 
+    let sandboxName: string | undefined;
+    try {
+      const info = await container.inspect();
+      sandboxName = info.Name.replace(/^\//, "");
+    } catch {
+      // best effort
+    }
+
     try {
       await container.stop({ t: 10 });
+
+      if (sandboxName) {
+        const sidecar = await findSidecarForSandbox(this.docker, sandboxName);
+        if (sidecar) {
+          await stopSidecar(this.docker, sidecar, this.quiet);
+        }
+      }
+
       s.stop(`Sandbox ${containerId.slice(0, 12)} stopped`);
     } catch (err: unknown) {
       const dockerErr = err as { statusCode?: number };
@@ -199,7 +250,24 @@ export class SandboxManager {
 
   async remove(containerId: string, force: boolean = false): Promise<void> {
     const container = this.docker.getContainer(containerId);
+
+    let sandboxName: string | undefined;
+    try {
+      const info = await container.inspect();
+      sandboxName = info.Name.replace(/^\//, "");
+    } catch {
+      // best effort
+    }
+
     await container.remove({ force });
+
+    if (sandboxName) {
+      const sidecar = await findSidecarForSandbox(this.docker, sandboxName);
+      if (sidecar) {
+        await removeSidecar(this.docker, sidecar, true, this.quiet);
+      }
+    }
+
     this.logInfo(`Sandbox ${containerId.slice(0, 12)} removed`);
   }
 
@@ -211,14 +279,20 @@ export class SandboxManager {
       },
     });
 
-    return containers.map((c) => ({
-      id: c.Id,
-      name: (c.Names[0] ?? "").replace(/^\//, ""),
-      state: parseContainerState(c.State ?? ""),
-      image: c.Image,
-      projectDir: c.Labels[LABELS.PROJECT_DIR] ?? "unknown",
-      createdAt: c.Labels[LABELS.CREATED_AT] ?? "",
-    }));
+    return containers
+      .filter(
+        (c) =>
+          c.Labels[SIDECAR_LABELS.IS_SIDECAR] !== "true" &&
+          c.Labels[SIDECAR_LABELS.IS_FILTER] !== "true",
+      )
+      .map((c) => ({
+        id: c.Id,
+        name: (c.Names[0] ?? "").replace(/^\//, ""),
+        state: parseContainerState(c.State ?? ""),
+        image: c.Image,
+        projectDir: c.Labels[LABELS.PROJECT_DIR] ?? "unknown",
+        createdAt: c.Labels[LABELS.CREATED_AT] ?? "",
+      }));
   }
 
   async findForProject(projectDir: string): Promise<SandboxInfo | null> {
@@ -247,6 +321,21 @@ export class SandboxManager {
     const shortId = containerId.slice(0, 12);
     s.start(`Resuming sandbox ${shortId}...`);
 
+    const sandboxName = info.Name.replace(/^\//, "");
+    const projectDir =
+      info.Config.Labels?.[LABELS.PROJECT_DIR] ?? process.cwd();
+
+    let sidecar: SidecarInfo | undefined;
+    const existingSidecar = await findSidecarForSandbox(
+      this.docker,
+      sandboxName,
+    );
+
+    if (existingSidecar) {
+      await startSidecar(this.docker, existingSidecar, this.quiet);
+      sidecar = existingSidecar;
+    }
+
     if (info.State.Running) {
       s.stop(`Sandbox ${shortId} is already running`);
     } else {
@@ -256,11 +345,12 @@ export class SandboxManager {
 
     return {
       id: containerId,
-      name: info.Name.replace(/^\//, ""),
+      name: sandboxName,
       state: "active",
       image: info.Config.Image,
-      projectDir: info.Config.Labels?.[LABELS.PROJECT_DIR] ?? process.cwd(),
+      projectDir,
       createdAt: info.Config.Labels?.[LABELS.CREATED_AT] ?? "",
+      sidecar,
     };
   }
 
@@ -276,6 +366,26 @@ export class SandboxManager {
           removed++;
         } catch {
           // Ignore cleanup errors
+        }
+      }
+    }
+
+    // 清理没有对应 sandbox 的孤儿 sidecar
+    const allContainers = await this.docker.listContainers({ all: true });
+    const managedNames = new Set(all.map((s) => s.name));
+    for (const c of allContainers) {
+      if (
+        c.Labels[LABELS.MANAGED_BY] === LABEL_PREFIX &&
+        (c.Labels[SIDECAR_LABELS.IS_SIDECAR] === "true" ||
+          c.Labels[SIDECAR_LABELS.IS_FILTER] === "true")
+      ) {
+        const forSandbox = c.Labels[SIDECAR_LABELS.SIDECAR_FOR];
+        if (forSandbox && !managedNames.has(forSandbox)) {
+          try {
+            await this.docker.getContainer(c.Id).remove({ force: true });
+          } catch {
+            // ignore
+          }
         }
       }
     }

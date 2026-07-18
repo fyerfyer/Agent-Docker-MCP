@@ -93,7 +93,7 @@ npx agent-docker-mcp cleanup
 
 The sandbox uses multiple layers of isolation:
 
-- **Kernel-enforced boundaries** (real isolation): cgroups resource limits (memory, CPU, PIDs), capability bounding-set drop to a minimal set, `no-new-privileges`, non-root user execution, `.git` mounted read-only, and optional network isolation / DooD disablement in `--strict` mode.
+- **Kernel-enforced boundaries** (real isolation): cgroups resource limits (memory, CPU, PIDs), capability bounding-set drop to a minimal set, `no-new-privileges`, non-root user execution, `.git` mounted read-only, and optional network isolation / DooD disablement in `--strict` mode. In strict mode, Docker API access is mediated by a `wollomatic/socket-proxy` sidecar plus a thin request-body filter that blocks privileged containers, host network/pid, device mounts, and out-of-project bind mounts.
 - **Anti-foot-gun guard**: a regex blacklist blocks obviously dangerous commands like `rm -rf /` or fork bombs. This is a convenience guard, **not** a security boundary — determined adversaries can bypass string filtering.
 - **Known residual risk in default mode**: the container has access to the host's `docker.sock` (DooD) and may use `host` networking on Linux. This is equivalent to giving the agent local root access. **Only use default mode for projects you trust.** For untrusted workloads or public code, use `--strict`.
 
@@ -107,6 +107,7 @@ Create `.agent-docker/config.json` in your project root to override defaults. CL
   "strict": false,
   "network": "host",
   "allowDocker": true,
+  "composeProxy": true,
   "resources": {
     "memoryMb": 4096,
     "cpus": 2,
@@ -120,9 +121,10 @@ Create `.agent-docker/config.json` in your project root to override defaults. CL
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `image` | string | `agent-docker-base:latest` | Docker image used for the sandbox. |
-| `strict` | boolean | `false` | When `true`, disables DooD, switches network to `bridge`, and adds `.env` to `protectPaths`. |
+| `strict` | boolean | `false` | When `true`, disables DooD, switches network to `bridge`, and adds `.env` to `protectPaths`. Docker Compose still works through a filtered socket proxy. |
 | `network` | `"host" \| "bridge" \| "none"` | Linux: `host`, other: `bridge` | Container network mode. Explicit value overrides `strict`. |
 | `allowDocker` | boolean | `true` | Mount the host Docker socket into the container. `strict` forces this to `false`. |
+| `composeProxy` | boolean | `true` | In `strict` mode, start a filtered socket-proxy sidecar so `docker`/`docker compose` still work. Set to `false` to fully disable Docker access in strict mode. |
 | `resources` | object | `memoryMb: 4096, cpus: 2, pidsLimit: 512` | cgroups limits for the container. |
 | `env` | string[] | `[]` | Extra environment variables passed to the container as `KEY=VALUE`. |
 | `protectPaths` | string[] | `[]` | Files inside the project to mask with `/dev/null:ro`. Directories are ignored. |
